@@ -57,6 +57,7 @@ import six
 
 from .utils.getargspec import getargspec
 from .utils.importstring import import_item
+from .utils.metaclass import Object, Type
 from .utils.sentinel import Sentinel
 from .utils.bunch import Bunch
 
@@ -358,7 +359,7 @@ class BaseDescriptor(object):
     name = None
     this_class = None
 
-    def class_init(self, cls, name):
+    def __set_owner__(self, cls, name):
         """Part of the initialization which may depend on the underlying
         HasDescriptors class.
 
@@ -695,50 +696,7 @@ def _callback_wrapper(cb):
         return _CallbackWrapper(cb)
 
 
-class MetaHasDescriptors(type):
-    """A metaclass for HasDescriptors.
-
-    This metaclass makes sure that any TraitType class attributes are
-    instantiated and sets their name attribute.
-    """
-
-    def __new__(mcls, name, bases, classdict):
-        """Create the HasDescriptors class."""
-        for k, v in classdict.items():
-            # ----------------------------------------------------------------
-            # Support of deprecated behavior allowing for TraitType types
-            # to be used instead of TraitType instances.
-            if inspect.isclass(v) and issubclass(v, TraitType):
-                warn("Traits should be given as instances, not types (for example, `Int()`, not `Int`)",
-                     DeprecationWarning, stacklevel=2)
-                classdict[k] = v()
-            # ----------------------------------------------------------------
-
-        return super(MetaHasDescriptors, mcls).__new__(mcls, name, bases, classdict)
-
-    def __init__(cls, name, bases, classdict):
-        """Finish initializing the HasDescriptors class."""
-        super(MetaHasDescriptors, cls).__init__(name, bases, classdict)
-        cls.setup_class(classdict)
-
-    def setup_class(cls, classdict):
-        """Setup descriptor instance on the class
-
-        This sets the :attr:`this_class` and :attr:`name` attributes of each
-        BaseDescriptor in the class dict of the newly created ``cls`` before
-        calling their :attr:`class_init` method.
-        """
-        for k, v in classdict.items():
-            if isinstance(v, BaseDescriptor):
-                v.class_init(cls, k)
-
-
-class MetaHasTraits(MetaHasDescriptors):
-    """A metaclass for HasTraits."""
-
-    def setup_class(cls, classdict):
-        cls._trait_default_generators = {}
-        super(MetaHasTraits, cls).setup_class(classdict)
+MetaHasTraits = MetaHasDescriptor = Type
 
 
 def observe(*names, **kwargs):
@@ -907,16 +865,30 @@ class DefaultHandler(EventHandler):
     def __init__(self, name):
         self.trait_name = name
 
-    def class_init(self, cls, name):
-        super(DefaultHandler, self).class_init(cls, name)
+    def __set_owner__(self, cls, name):
+        super(DefaultHandler, self).__set_owner__(cls, name)
         cls._trait_default_generators[self.trait_name] = self
 
 
-class HasDescriptors(six.with_metaclass(MetaHasDescriptors, object)):
+class HasDescriptors(Object):
     """The base class for all classes that have descriptors.
     """
 
-    def __new__(cls, *args, **kwargs):
+    def __init_subclass__(cls, **kwargs):
+        """Create the HasDescriptors class."""
+        for k in cls.__attribute_order__:
+            v = getattr(cls, k)
+            # ----------------------------------------------------------------
+            # Support of deprecated behavior allowing for TraitType types
+            # to be used instead of TraitType instances.
+            if inspect.isclass(v) and issubclass(v, TraitType):
+                warn("Traits should be given as instances, not types (for example, `Int()`, not `Int`)",
+                     DeprecationWarning, stacklevel=2)
+                setattr(cls, k, v())
+            # ----------------------------------------------------------------
+
+        super(HasDescriptors, cls).__init_subclass__(**kwargs)
+
         # This is needed because object.__new__ only accepts
         # the cls argument.
         new_meth = super(HasDescriptors, cls).__new__
@@ -946,7 +918,11 @@ class HasDescriptors(six.with_metaclass(MetaHasDescriptors, object)):
                     value.instance_init(self)
 
 
-class HasTraits(six.with_metaclass(MetaHasTraits, HasDescriptors)):
+class HasTraits(HasDescriptors):
+
+    def __init_subclass__(cls, **kwargs):
+        cls._trait_default_generators = {}
+        super(HasTraits, cls).__init_subclass__(**kwargs)
 
     def setup_instance(self, *args, **kwargs):
         self._trait_values = {}
@@ -1748,10 +1724,10 @@ class Union(TraitType):
         self.default_value = self.trait_types[0].default_value
         super(Union, self).__init__(**metadata)
 
-    def class_init(self, cls, name):
+    def __set_owner__(self, cls, name):
         for trait_type in self.trait_types:
-            trait_type.class_init(cls, None)
-        super(Union, self).class_init(cls, name)
+            trait_type.__set_owner__(cls, None)
+        super(Union, self).__set_owner__(cls, name)
 
     def instance_init(self, obj):
         for trait_type in self.trait_types:
@@ -2184,10 +2160,10 @@ class Container(Instance):
                 validated.append(v)
         return self.klass(validated)
 
-    def class_init(self, cls, name):
+    def __set_owner__(self, cls, name):
         if isinstance(self._trait, TraitType):
-            self._trait.class_init(cls, None)
-        super(Container, self).class_init(cls, name)
+            self._trait.__set_owner__(cls, None)
+        super(Container, self).__set_owner__(cls, name)
 
     def instance_init(self, obj):
         if isinstance(self._trait, TraitType):
@@ -2375,11 +2351,11 @@ class Tuple(Container):
                 validated.append(v)
         return tuple(validated)
 
-    def class_init(self, cls, name):
+    def __set_owner__(self, cls, name):
         for trait in self._traits:
             if isinstance(trait, TraitType):
-                trait.class_init(cls, None)
-        super(Container, self).class_init(cls, name)
+                trait.__set_owner__(cls, None)
+        super(Container, self).__set_owner__(cls, name)
 
     def instance_init(self, obj):
         for trait in self._traits:
@@ -2478,13 +2454,13 @@ class Dict(Instance):
 
         return self.klass(validated)
 
-    def class_init(self, cls, name):
+    def __set_owner__(self, cls, name):
         if isinstance(self._trait, TraitType):
-            self._trait.class_init(cls, None)
+            self._trait.__set_owner__(cls, None)
         if self._traits is not None:
             for trait in self._traits.values():
-                trait.class_init(cls, None)
-        super(Dict, self).class_init(cls, name)
+                trait.__set_owner__(cls, None)
+        super(Dict, self).__set_owner__(cls, name)
 
     def instance_init(self, obj):
         if isinstance(self._trait, TraitType):
