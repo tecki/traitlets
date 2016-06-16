@@ -7,7 +7,7 @@ the entire class creation process with them.
 
 Most of the time, however, they are too powerful. This module helps
 you to use some of the advantages of metaclasses, without having
-to know all the details. It defines a base class `Object`.
+to know all the details. It defines a base class :class:`Object`.
 Inheriting from this class one can modify the subclass creation
 process.
 
@@ -22,7 +22,7 @@ will be called after each subclass that is generated of your
 class. As a parameter it gets the namespace of the class. An example
 is a simple subclass registration::
 
-    class Register(SubclassInit):
+    class Register(Object):
         subclasses = []
 
         def __subclass_init__(cls, **kwargs):
@@ -45,8 +45,8 @@ Initializing Descriptors
 Descriptors are a powerful technique to create object attributes which
 calculate their value on-the-fly. A property is a simple example of such
 a descriptor. There is a common problem with those descriptors: they
-do not know their name. Using `Object` you can add an
-`__set_owner__` method to a descriptor which gets called once the
+do not know their name. Using :class:`Object` you can add an
+`__init_descriptor__` method to a descriptor which gets called once the
 class is ready and the descriptor's name is known.
 
 As an example, we can define a descriptor which makes an attribute a
@@ -61,7 +61,7 @@ weak reference::
         def __set__(self, instance, value):
             instance.__dict__[self.name] = weakref.ref(value)
 
-        def __set_owner__(self, owner, name):
+        def __init_descriptor__(self, owner, name):
             self.name = name
 
 Order of Attributes
@@ -88,15 +88,17 @@ As an example::
         ('__module__', '__qualname__', 'a', 'b', 'c')
 """
 
+import abc
+from collections import OrderedDict
+
+
 __all__ = ["Type", "Object", "ABC", "ABCMeta"]
+
 
 try:
     from types import Type, Object
     from abc import ABC, ABCMeta
 except ImportError:
-    import abc
-    from collections import OrderedDict
-
     class Type(type):
         @classmethod
         def __prepare__(cls, name, bases, **kwargs):
@@ -106,23 +108,24 @@ except ImportError:
             method = ns.get("__init_subclass__")
             if method is not None:
                 ns["__init_subclass__"] = classmethod(method)
-            return super(Type, cls).__new__(cls, name, bases, ns)
+            ns["__attribute_order__"] = tuple(ns.keys())
+            ret = super(Type, cls).__new__(cls, name, bases, ns)
+            super(ret, ret).__init_subclass__(**kwargs)
+            return ret
 
         def __init__(self, name, bases, ns, **kwargs):
             super(Type, self).__init__(name, bases, ns)
-            self.__attribute_order__ = tuple(ns.keys())
-            super(self, self).__init_subclass__(**kwargs)
+            for k, v in ns.items():
+                if hasattr(v, "__init_descriptor__"):
+                    v.__init_descriptor__(self, k)
 
     class ABCMeta(Type, abc.ABCMeta):
         pass
 
-    class _Base(object):
+    class Base(object):
         @classmethod
         def __init_subclass__(cls):
-            for k in cls.__attribute_order__:
-                v = getattr(cls, k, None)
-                if hasattr(v, "__set_owner__"):
-                    v.__set_owner__(cls, k)
+            pass
 
-    Object = Type("SubclassInit", (_Base,), {})
-    ABC = ABCMeta("ABCSubclassInit", (Object,), {})
+    Object = Type("Object", (Base,), {})
+    ABC = ABCMeta("ABC", (Base,), {})
